@@ -1,6 +1,6 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE BlockArguments, LambdaCase #-}
-{-# LANGUAGE ExplicitForAll, TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables, TypeApplications #-}
 {-# LANGUAGE RequiredTypeArguments #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -27,7 +27,11 @@ module Control.Monad.Yaftee.Pipe.Tools (
 
 	-- * SCAN
 
-	scanl
+	scanl,
+
+	-- * Devide
+
+	devideRun, devide, devideNs, Devide
 
 	) where
 
@@ -97,3 +101,65 @@ newtype Length = Length { unLength :: Int }
 scanl :: U.Member Pipe.P es => (b -> a -> b) -> b -> Eff.E es a b r
 scanl op =
 	fix \go v -> (v `op`) <$>  Pipe.await >>= \v' -> Pipe.yield v' >> go v'
+
+devideRun :: forall nm m es i o r . (P.Monoid m, HFunctor.Loose (U.U es)) =>
+	Eff.E (State.Named nm (Devide m) ': es) i o r ->
+	Eff.E es i o (r, Devide m)
+devideRun = flip (State.runN @nm) (Devide mempty)
+
+devideNs :: forall nm -> (
+	Semigroup m,
+	U.Member Pipe.P es, U.Member (State.Named nm (Devide m)) es ) =>
+	(Int -> m -> Maybe (m, m)) -> m -> [Int] -> Eff.E es m m ()
+devideNs nm sp bs0 ns0 = do
+	State.putN nm $ Devide bs0
+	($ ns0) $ fix \go -> \case
+		[] -> pure ()
+		n : ns -> do
+			Pipe.yield =<< getInput nm sp n
+			go ns
+
+devide :: forall nm -> (
+	Eq m, P.Monoid m,
+	U.Member Pipe.P es, U.Member (State.Named nm (Devide m)) es ) =>
+	(Int -> m -> Maybe (m, m)) -> m -> Int -> Eff.E es m m ()
+devide nm sp bs0 n = do
+	State.putN nm $ Devide bs0
+	fix \go -> do
+		bs <- getInput' nm sp n
+		if bs == mempty then pure () else Pipe.yield bs >> go
+
+getInput' :: forall m es o . forall nm -> (
+	P.Monoid m,
+	U.Member Pipe.P es, U.Member (State.Named nm (Devide m)) es ) =>
+	(Int -> m -> Maybe (m, m)) -> Int -> Eff.E es m o m
+getInput' nm sp n = State.getN nm >>= \(Devide bs) -> case sp n bs of
+	Nothing -> readMore' nm >>= bool
+		(unDevide <$> (State.getN nm <* State.putN @(Devide m) nm (Devide mempty)))
+		(getInput' nm sp n)
+	Just (t, d) -> t <$ State.putN nm (Devide d)
+
+readMore' :: forall nm -> (
+	Semigroup mono, U.Member Pipe.P es,
+	U.Member (State.Named nm (Devide mono)) es ) =>
+	Eff.E es mono o Bool
+readMore' nm = Pipe.awaitMaybe >>= \case
+	Nothing -> pure False
+	Just xs -> True <$ State.modifyN nm (Devide . (<> xs) . unDevide)
+
+getInput :: forall nm -> (
+	Semigroup m,
+	U.Member Pipe.P es, U.Member (State.Named nm (Devide m)) es ) =>
+	(Int -> m -> Maybe (m, m)) -> Int -> Eff.E es m o m
+getInput nm sp n = State.getN nm >>= \(Devide bs) -> case sp n bs of
+	Nothing -> readMore nm >> getInput nm sp n
+	Just (t, d) -> t <$ State.putN nm (Devide d)
+
+readMore :: forall nm -> (
+	Semigroup mono, U.Member Pipe.P es,
+	U.Member (State.Named nm (Devide mono)) es ) =>
+	Eff.E es mono o ()
+readMore nm =
+	Pipe.await >>= \xs -> State.modifyN nm (Devide . (<> xs) . unDevide)
+
+newtype Devide m = Devide { unDevide :: m } deriving Show
