@@ -29,7 +29,7 @@ module Control.Monad.Yaftee.Pipe.Tools (
 
 	scanl,
 
-	-- * Devide
+	-- * DEVIDE
 
 	devideRun, devide, devideNs, Devide
 
